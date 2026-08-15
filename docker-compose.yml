@@ -1,0 +1,42 @@
+services:
+  # Builds the image used for every sandboxed script run / test run /
+  # terminal session. It doesn't need to stay running itself - the backend
+  # spawns short-lived (or, for terminals, long-lived-until-disconnect)
+  # sibling containers from this image on demand via the mounted socket.
+  sandbox-image:
+    build:
+      context: ./docker
+      dockerfile: sandbox.Dockerfile
+    image: pytrace-sandbox
+    command: ["true"]
+    restart: "no"
+
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      FRONTEND_ORIGINS: ${FRONTEND_ORIGINS:-http://localhost:5173}
+      GITHUB_TOKEN_KEY: ${GITHUB_TOKEN_KEY}
+      # Backend sees session data at /app/sessions, but its `docker run -v`
+      # calls go to the HOST's daemon (via the socket below) to spawn
+      # sibling containers - so it also needs the equivalent HOST path to
+      # pass as the mount source. Must match the bind mount just below.
+      HOST_SESSIONS_DIR: ${PYTRACE_HOST_DATA_DIR}
+    volumes:
+      - ${PYTRACE_HOST_DATA_DIR}:/app/sessions
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - sandbox-image
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_HTTP_BASE: ${VITE_API_HTTP_BASE:-http://localhost:8000}
+        VITE_API_WS_BASE: ${VITE_API_WS_BASE:-ws://localhost:8000}
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend

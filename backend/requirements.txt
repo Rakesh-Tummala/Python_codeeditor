@@ -1,0 +1,9 @@
+fastapi==0.141.1
+uvicorn[standard]==0.52.3
+google-genai
+python-dotenv
+pycrdt
+pycrdt-websocket
+cryptography
+httpx
+docker
