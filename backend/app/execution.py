@@ -2,9 +2,10 @@ import json
 import subprocess
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from .auth import CurrentUser, get_current_user
 from .sessions_store import get_session_dir, host_mount_path, resolve_safe_path
 
 router = APIRouter(prefix="/api/sessions", tags=["execution"])
@@ -41,7 +42,10 @@ def execute_in_sandbox(session_dir: Path, entry_path: str) -> RunResponse:
     container_entry = f"/workspace/{entry_path}"
     cmd = [
         "docker", "run", "--rm",
-        "--network", "none",
+        # Outbound network is intentionally allowed (default bridge network) -
+        # see SYSTEM_DESIGN.md's sandbox isolation section for the tradeoff
+        # this accepts: any code run here, including from an unreviewed
+        # cloned repo, can now make outbound connections.
         "--memory", "256m",
         "--cpus", "0.5",
         "--pids-limit", "64",
@@ -79,7 +83,7 @@ def execute_in_sandbox(session_dir: Path, entry_path: str) -> RunResponse:
 
 
 @router.post("/{session_id}/run", response_model=RunResponse)
-def run_file(session_id: str, body: RunRequest):
+def run_file(session_id: str, body: RunRequest, current_user: CurrentUser = Depends(get_current_user)):
     session_dir = get_session_dir(session_id)
     target = resolve_safe_path(session_dir, body.entry_path)
     if not target.is_file():

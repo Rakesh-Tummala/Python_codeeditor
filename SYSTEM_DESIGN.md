@@ -115,7 +115,7 @@ sequenceDiagram
     participant T as tracer_runner.py
 
     FE->>BE: POST /run {entry_path}
-    BE->>D: docker run --rm --network none --memory 256m --cpus 0.5 --pids-limit 64 -v session:/workspace
+    BE->>D: docker run --rm --memory 256m --cpus 0.5 --pids-limit 64 -v session:/workspace
     D->>T: python tracer_runner.py /workspace/entry.py
     T->>T: sys.settrace(...) + exec(compile(source)) + redirect stdout/stderr
     T-->>D: single JSON envelope on real stdout {stdout, stderr, trace}
@@ -250,7 +250,7 @@ sequenceDiagram
     participant BE as terminal.py
     participant Docker as Docker Engine
     FE->>BE: WebSocket connect
-    BE->>Docker: containers.run(entrypoint=/bin/sh, tty=True, stdin_open=True,<br/>network_mode=none, mem_limit=256m, pids_limit=64, user=10001)
+    BE->>Docker: containers.run(entrypoint=/bin/sh, tty=True, stdin_open=True,<br/>mem_limit=256m, pids_limit=64, user=10001)
     BE->>Docker: attach_socket(stdin, stdout, stderr, stream)
     loop while connected
         FE->>BE: keystrokes (text) or {"resize": {cols, rows}}
@@ -264,10 +264,11 @@ sequenceDiagram
 
 Docker's own TTY allocation stands in for `node-pty` here, since this is a Python
 backend — `docker-py`'s `attach_socket()` is the "or equivalent" the plan's Week 10
-goal allowed for. Same isolation as script execution: non-root (`uid=10001`), no
-network, capped memory/cpus/pids — but long-lived (until WebSocket disconnect) with a
-real shell as PID 1, instead of the execution sandbox's single-script-and-exit
-entrypoint.
+goal allowed for. Same isolation as script execution: non-root (`uid=10001`), capped
+memory/cpus/pids — but long-lived (until WebSocket disconnect) with a real shell as
+PID 1, instead of the execution sandbox's single-script-and-exit entrypoint. Outbound
+network is intentionally enabled (see §5) so `git clone`/`pip install`/`curl` work
+from inside it.
 
 **The part that actually broke, twice, in ways only a real deployment surfaced**:
 `attach_socket()`'s return type is transport-dependent. On Windows (Docker Desktop's
@@ -293,7 +294,6 @@ interactive shell — executes with the *same* constraints:
 | Control | Value | Purpose |
 |---|---|---|
 | User | `uid=10001`, `--shell /usr/sbin/nologin` | Non-root; no usable login shell if something escapes the intended entrypoint |
-| Network | `--network none` | No outbound network access at all — verified with a live `socket.connect()` returning `ENETUNREACH`, not just configured and assumed |
 | Memory | `--memory 256m` | Caps runaway allocation |
 | CPU | `--cpus 0.5` | Caps runaway compute |
 | PIDs | `--pids-limit 64` | Caps fork bombs |
@@ -302,8 +302,38 @@ interactive shell — executes with the *same* constraints:
 | Container lifetime | `--rm` (script run), explicit `container.stop()` on disconnect (terminal) | No orphaned containers |
 
 None of this is taken on faith — every row above was independently verified by
-actually running code that would violate it (a `socket.connect()` to a real external
-IP, `cat /sys/fs/cgroup/pids.max`, `id`) and confirming the sandbox refused it.
+actually running code that would violate it (`cat /sys/fs/cgroup/pids.max`, `id`) and
+confirming the sandbox enforced it.
+
+### Network access is intentionally enabled, not sandboxed
+
+Earlier revisions of this project ran every sandbox container with `--network none`,
+verified with a live `socket.connect()` returning `ENETUNREACH`. That constraint was
+deliberately removed: outbound network is now on by default (the sandbox image also
+gained `git`/`curl`) so `pip install <package>`, `git clone`, hitting a real API from
+a script, and using `git`/`curl` directly from the terminal all work.
+
+This is a real, conscious reduction in the isolation model, not a bug — worth being
+explicit about the tradeoff it accepts: any code that runs in a sandbox container
+(a plain script run, an AI-generated test, or anything typed into the terminal,
+including code from a cloned repo you haven't fully read) can now make outbound
+connections — reach other hosts on your network, exfiltrate whatever's in
+`/workspace`, or phone home to somewhere unintended. The non-root user, resource
+caps, and filesystem confinement in the table above are unchanged and still real
+protections; network isolation specifically is the one that was traded away, in
+exchange for the sandbox being generally useful for real development (installing
+dependencies, cloning repos, calling real APIs) rather than fully airtight. Re-adding
+`--network none` for script/test execution while keeping it enabled only for the
+terminal (a deliberate, human-driven action) — or an egress allowlist restricted to
+just PyPI/GitHub instead of the open internet — are both straightforward follow-ups
+if the fully-open tradeoff turns out to be too much.
+
+`pip install` specifically needed one more change beyond just enabling the network:
+the sandbox user is non-root with no home directory, so it can't write to the default
+global `site-packages` and has nowhere for `pip install --user` to fall back to
+either. Fixed by `chown`-ing `site-packages`/`/usr/local/bin` to the sandbox user at
+image-build time and disabling pip's cache (`PIP_NO_CACHE_DIR=1`, since there's no
+`$HOME` for pip to put one) rather than granting a home directory just for that.
 
 ### Path-traversal protection
 

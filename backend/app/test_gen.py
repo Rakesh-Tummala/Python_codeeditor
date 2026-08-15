@@ -1,9 +1,10 @@
 import re
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from .ai import ask
+from .auth import CurrentUser, get_current_user
 from .execution import execute_in_sandbox
 from .sessions_store import get_session_dir, resolve_safe_path
 
@@ -65,7 +66,7 @@ class GenerateTestsResponse(BaseModel):
 
 
 @router.post("/{session_id}/generate-tests", response_model=GenerateTestsResponse)
-def generate_tests(session_id: str, body: GenerateTestsRequest):
+def generate_tests(session_id: str, body: GenerateTestsRequest, current_user: CurrentUser = Depends(get_current_user)):
     session_dir = get_session_dir(session_id)
     source_target = resolve_safe_path(session_dir, body.file)
     if not source_target.is_file():

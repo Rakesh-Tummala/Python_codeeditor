@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .ai_router import router as ai_router
+from .auth import router as auth_router
 from .collab import router as collab_router
 from .collab import websocket_server
 from .execution import router as execution_router
@@ -25,6 +26,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="PyTrace API", lifespan=lifespan)
+app.include_router(auth_router)
 app.include_router(files_router)
 app.include_router(execution_router)
 app.include_router(ai_router)

@@ -8,10 +8,14 @@ import DebugSidebar, { type AiState, type ReviewState, type StackFrame } from '.
 import OutputPanel from './OutputPanel'
 import FixDiffModal, { type FixState } from './FixDiffModal'
 import GitHubPanel from './GitHubPanel'
+import LoginPage from './LoginPage'
 import TerminalPanel from './TerminalPanel'
 import TestResultsPanel from './TestResultsPanel'
+import UserMenu from './UserMenu'
+import { clearToken, consumeTokenFromUrl, fetchMe, getToken, type AuthUser } from './auth'
 import { API_WS_BASE } from './config'
-import { getUserIdentity, type UserIdentity } from './collab'
+import { identityForUser, type UserIdentity } from './collab'
+import { useResizable } from './useResizable'
 import {
   cloneRepo,
   commitAndPush,
@@ -25,6 +29,7 @@ import {
   generateTests,
   gitStatus,
   listFiles,
+  listMySessions,
   listPullRequests,
   readFile,
   renameEntry,
@@ -35,6 +40,7 @@ import {
   type GitStatus,
   type PullRequestInfo,
   type RunResult,
+  type SessionSummary,
   type TraceEvent,
   type TreeNode,
 } from './api'
@@ -87,6 +93,10 @@ function findNextEventIndex(events: TraceEvent[], fromIndex: number, file: strin
 }
 
 function App() {
+  const [user, setUser] = useState<AuthUser | null>(null)
+  const [authLoading, setAuthLoading] = useState(true)
+  const [mySessions, setMySessions] = useState<SessionSummary[]>([])
+
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [tree, setTree] = useState<TreeNode[]>([])
   const [tabs, setTabs] = useState<Tab[]>([])
@@ -138,6 +148,14 @@ function App() {
 
   const [showTerminal, setShowTerminal] = useState(false)
 
+  // Each panel's size is user-draggable rather than fixed - direction=-1
+  // means the panel grows as the pointer moves in the *opposite* axis
+  // direction (a right- or bottom-anchored panel growing left/up).
+  const fileTree = useResizable(220, { axis: 'x', direction: 1, min: 150, max: 500 })
+  const debugSidebar = useResizable(280, { axis: 'x', direction: -1, min: 200, max: 560 })
+  const outputPanel = useResizable(160, { axis: 'y', direction: -1, min: 80, max: 500 })
+  const terminalPanel = useResizable(320, { axis: 'y', direction: -1, min: 120, max: 700 })
+
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null)
   const monacoRef = useRef<Parameters<OnMount>[1] | null>(null)
   const lineDecorationsRef = useRef<string[]>([])
@@ -161,9 +179,25 @@ function App() {
     liveRef.current = { activePath, runResult, stepIndex, breakpoints, isDriver }
   })
 
+  // Runs once, before anything session-related: pick up a token from a
+  // just-completed OAuth redirect (if any), then resolve whoever is
+  // actually logged in. Nothing else in the app can safely start until
+  // this settles, since every API call and WebSocket needs the token.
+  useEffect(() => {
+    async function boot() {
+      consumeTokenFromUrl()
+      const me = await fetchMe()
+      setUser(me)
+      setAuthLoading(false)
+    }
+    boot()
+  }, [])
+
   // One-time setup: reuse a saved session id so a page reload keeps
   // working in the same on-disk directory instead of starting fresh.
+  // Waits for login to resolve first - every call inside needs the token.
   useEffect(() => {
+    if (!user) return
     async function init() {
       // A shareable link (?session=...) always wins over whatever is
       // already saved locally - that's what makes it a "join this room"
@@ -216,7 +250,8 @@ function App() {
       }
     }
     init()
-  }, [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user])
 
   // Persist which tabs are open so a reload restores the workspace, not
   // just the on-disk files (which already persist on their own via save).
@@ -319,8 +354,8 @@ function App() {
   function broadcastDebugState(result: RunResult | null, step: number, bps: Set<string>, file: string | null) {
     const ydoc = debugYdocRef.current
     const dmap = debugMapRef.current
-    if (!ydoc || !dmap) return
-    const me = getUserIdentity()
+    if (!ydoc || !dmap || !user) return
+    const me = identityForUser(user)
     ydoc.transact(() => {
       dmap.set('runResult', result ? JSON.stringify(result) : null)
       dmap.set('stepIndex', step)
@@ -555,6 +590,28 @@ function App() {
     )
   }
 
+  async function handleOpenUserMenu() {
+    try {
+      const { sessions } = await listMySessions()
+      setMySessions(sessions)
+    } catch (e) {
+      window.alert((e as Error).message)
+    }
+  }
+
+  function handleOpenMySession(id: string) {
+    window.location.href = `${window.location.origin}${window.location.pathname}?session=${id}`
+  }
+
+  function handleLogout() {
+    clearToken()
+    // A stored sessionId is per-browser, not per-account - clearing it on
+    // logout stops a different person logging into the same browser from
+    // silently landing back in whatever session was open before.
+    localStorage.removeItem('pytrace:sessionId')
+    window.location.href = window.location.origin + window.location.pathname
+  }
+
   const activeTab = tabs.find((t) => t.path === activePath) ?? null
   const events = runResult?.trace.events ?? []
   const stacksByIndex = useMemo(() => computeStacks(events), [events])
@@ -714,10 +771,10 @@ function App() {
 
     const ydoc = new Y.Doc()
     const roomName = `${sessionId}/${activeTab.path}`
-    const provider = new WebsocketProvider(YJS_WS_BASE, roomName, ydoc)
+    const provider = new WebsocketProvider(YJS_WS_BASE, roomName, ydoc, { params: { token: getToken() ?? '' } })
     const ytext = ydoc.getText('content')
 
-    const me = getUserIdentity()
+    const me = user ? identityForUser(user) : { name: 'unknown', color: '#888888' }
     provider.awareness.setLocalStateField('user', me)
 
     function updatePresence() {
@@ -753,7 +810,7 @@ function App() {
       ydoc.destroy()
       setPresence([])
     }
-  }, [sessionId, activeTab?.path, editorReady])
+  }, [sessionId, activeTab?.path, editorReady, user])
 
   // Shared debugging state (Week 8), synced across the whole session rather
   // than per-file. Reuses the same generic Yjs websocket endpoint with a
@@ -763,7 +820,9 @@ function App() {
   useEffect(() => {
     if (!sessionId) return
     const ydoc = new Y.Doc()
-    const provider = new WebsocketProvider(YJS_WS_BASE, `${sessionId}/__debug__`, ydoc)
+    const provider = new WebsocketProvider(YJS_WS_BASE, `${sessionId}/__debug__`, ydoc, {
+      params: { token: getToken() ?? '' },
+    })
     const dmap = ydoc.getMap('debug')
     debugYdocRef.current = ydoc
     debugMapRef.current = dmap
@@ -803,16 +862,26 @@ function App() {
     }
   }, [sessionId])
 
+  if (authLoading) {
+    return <div className="login-page" />
+  }
+  if (!user) {
+    return <LoginPage />
+  }
+
   return (
     <div className="app-layout">
-      <FileTree
-        tree={tree}
-        activePath={activePath}
-        onOpenFile={openFile}
-        onCreate={handleCreate}
-        onDelete={handleDelete}
-        onRename={handleRename}
-      />
+      <div style={{ width: fileTree.size, flexShrink: 0 }}>
+        <FileTree
+          tree={tree}
+          activePath={activePath}
+          onOpenFile={openFile}
+          onCreate={handleCreate}
+          onDelete={handleDelete}
+          onRename={handleRename}
+        />
+      </div>
+      <div className="resize-handle-x" onMouseDown={fileTree.onDragStart} />
       <div className="editor-area">
         <div className="tab-bar">
           {tabs.map((t) => (
@@ -880,6 +949,15 @@ function App() {
             <button className="github-button" onClick={() => setShowTerminal((v) => !v)} disabled={!sessionId}>
               💻 Terminal
             </button>
+            {user && (
+              <UserMenu
+                user={user}
+                mySessions={mySessions}
+                onOpenMenu={handleOpenUserMenu}
+                onOpenSession={handleOpenMySession}
+                onLogout={handleLogout}
+              />
+            )}
           </div>
         </div>
         <div className="editor-and-debug">
@@ -896,22 +974,36 @@ function App() {
           ) : (
             <div className="empty-state">Open a file from the tree to start editing.</div>
           )}
-          <DebugSidebar
-            currentEvent={currentEvent}
-            stack={currentStack}
-            ai={aiState}
-            review={activeTab?.path === reviewedPath ? reviewState : null}
-            onJumpToLine={handleJumpToReviewLine}
+          <div className="resize-handle-x" onMouseDown={debugSidebar.onDragStart} />
+          <div style={{ width: debugSidebar.size, flexShrink: 0 }}>
+            <DebugSidebar
+              currentEvent={currentEvent}
+              stack={currentStack}
+              ai={aiState}
+              review={activeTab?.path === reviewedPath ? reviewState : null}
+              onJumpToLine={handleJumpToReviewLine}
+            />
+          </div>
+        </div>
+        <div className="resize-handle-y" onMouseDown={outputPanel.onDragStart} />
+        <div style={{ height: outputPanel.size, flexShrink: 0 }}>
+          <OutputPanel
+            running={running}
+            result={runResult}
+            onExplainError={handleExplainError}
+            onFixError={handleFixError}
+            explaining={aiState?.loading ?? false}
+            fixing={fixState?.loading ?? false}
           />
         </div>
-        <OutputPanel
-          running={running}
-          result={runResult}
-          onExplainError={handleExplainError}
-          onFixError={handleFixError}
-          explaining={aiState?.loading ?? false}
-          fixing={fixState?.loading ?? false}
-        />
+        {showTerminal && sessionId && (
+          <>
+            <div className="resize-handle-y" onMouseDown={terminalPanel.onDragStart} />
+            <div style={{ height: terminalPanel.size, flexShrink: 0 }}>
+              <TerminalPanel sessionId={sessionId} onClose={() => setShowTerminal(false)} />
+            </div>
+          </>
+        )}
       </div>
       {fixState && !fixState.loading && (
         <FixDiffModal fix={fixState} onAccept={handleAcceptFix} onReject={handleRejectFix} />
@@ -939,7 +1031,6 @@ function App() {
           onCreatePr={handleCreatePr}
         />
       )}
-      {showTerminal && sessionId && <TerminalPanel sessionId={sessionId} onClose={() => setShowTerminal(false)} />}
       {showTestPanel && (
         <TestResultsPanel
           loading={testLoading}

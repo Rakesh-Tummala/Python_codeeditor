@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
+import { getToken } from './auth'
 import { API_WS_BASE } from './config'
 
 const TERMINAL_WS_BASE = `${API_WS_BASE}/api/sessions`
@@ -24,7 +25,8 @@ export default function TerminalPanel({ sessionId, onClose }: TerminalPanelProps
     term.open(container)
     fitAddon.fit()
 
-    const ws = new WebSocket(`${TERMINAL_WS_BASE}/${sessionId}/terminal`)
+    const token = getToken() ?? ''
+    const ws = new WebSocket(`${TERMINAL_WS_BASE}/${sessionId}/terminal?token=${encodeURIComponent(token)}`)
 
     function sendResize() {
       if (ws.readyState === WebSocket.OPEN) {

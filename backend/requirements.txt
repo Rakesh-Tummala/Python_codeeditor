@@ -7,3 +7,4 @@ pycrdt-websocket
 cryptography
 httpx
 docker
+itsdangerous

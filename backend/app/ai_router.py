@@ -1,9 +1,10 @@
 import json
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from .ai import ask, strip_code_fence
+from .auth import CurrentUser, get_current_user
 
 router = APIRouter(prefix="/api/ai", tags=["ai"])
 
@@ -93,7 +94,7 @@ REVIEW_CODE_SYSTEM = (
 
 
 @router.post("/explain-error", response_model=ExplainErrorResponse)
-def explain_error(body: ExplainErrorRequest):
+def explain_error(body: ExplainErrorRequest, current_user: CurrentUser = Depends(get_current_user)):
     trace_text = "\n".join(
         f"line {e['line']} in {e['func']} (depth {e['depth']}): locals = {e['locals']}"
         for e in body.trace_tail
@@ -113,7 +114,7 @@ def explain_error(body: ExplainErrorRequest):
 
 
 @router.post("/explain-code", response_model=ExplainCodeResponse)
-def explain_code(body: ExplainCodeRequest):
+def explain_code(body: ExplainCodeRequest, current_user: CurrentUser = Depends(get_current_user)):
     user_prompt = f"Explain this {body.language} code in plain language:\n\n```{body.language}\n{body.code}\n```"
     try:
         explanation = ask(EXPLAIN_CODE_SYSTEM, user_prompt, max_tokens=400)
@@ -123,7 +124,7 @@ def explain_code(body: ExplainCodeRequest):
 
 
 @router.post("/fix-error", response_model=FixErrorResponse)
-def fix_error(body: FixErrorRequest):
+def fix_error(body: FixErrorRequest, current_user: CurrentUser = Depends(get_current_user)):
     trace_text = "\n".join(
         f"line {e['line']} in {e['func']} (depth {e['depth']}): locals = {e['locals']}"
         for e in body.trace_tail
@@ -142,7 +143,7 @@ def fix_error(body: FixErrorRequest):
 
 
 @router.post("/review-code", response_model=ReviewCodeResponse)
-def review_code(body: ReviewCodeRequest):
+def review_code(body: ReviewCodeRequest, current_user: CurrentUser = Depends(get_current_user)):
     user_prompt = f"File: {body.file}\n\n```{body.language}\n{body.source}\n```\n\nReview this code."
     try:
         raw = ask(REVIEW_CODE_SYSTEM, user_prompt, max_tokens=1200, json_mode=True)

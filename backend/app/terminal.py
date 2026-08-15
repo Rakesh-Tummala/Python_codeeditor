@@ -5,8 +5,9 @@ import os
 import docker
 from docker.errors import DockerException
 from docker.utils.socket import read as docker_socket_read
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 
+from .auth import get_user_by_token
 from .sessions_store import get_session_dir, host_mount_path
 
 router = APIRouter()
@@ -43,21 +44,31 @@ def _write_to_docker_socket(sock, data: bytes) -> None:
 
 @router.websocket("/api/sessions/{session_id}/terminal")
 async def terminal_ws(websocket: WebSocket, session_id: str):
+    token = websocket.query_params.get("token")
+    if not token:
+        await websocket.close(code=4401)
+        return
+    try:
+        get_user_by_token(token)
+    except HTTPException:
+        await websocket.close(code=4401)
+        return
+
     session_dir = get_session_dir(session_id)
     await websocket.accept()
 
     client = _client()
-    # Same isolation as script execution (non-root, no network, capped
-    # memory/cpu/pids) but long-lived and with a real shell as PID 1 instead
-    # of the entrypoint's single-script-and-exit wrapper - a terminal has to
-    # persist between commands, not run one and terminate.
+    # Same isolation as script execution (non-root, capped memory/cpu/pids)
+    # but long-lived and with a real shell as PID 1 instead of the
+    # entrypoint's single-script-and-exit wrapper - a terminal has to
+    # persist between commands, not run one and terminate. Network is
+    # intentionally allowed (default bridge) - see SYSTEM_DESIGN.md.
     container = client.containers.run(
         SANDBOX_IMAGE,
         entrypoint=["/bin/sh"],
         detach=True,
         tty=True,
         stdin_open=True,
-        network_mode="none",
         mem_limit="256m",
         nano_cpus=int(0.5 * 1e9),
         pids_limit=64,

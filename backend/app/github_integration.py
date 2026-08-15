@@ -8,9 +8,10 @@ from pathlib import Path
 import httpx
 from cryptography.fernet import Fernet
 from dotenv import set_key
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from .auth import CurrentUser, get_current_user
 from .sessions_store import SESSIONS_ROOT, get_session_dir
 
 GITHUB_API = "https://api.github.com"
@@ -157,7 +158,7 @@ def _api_headers(token: str | None) -> dict:
 
 
 @router.post("/{session_id}/git/clone", response_model=CloneResponse)
-def clone_repo(session_id: str, body: CloneRequest):
+def clone_repo(session_id: str, body: CloneRequest, current_user: CurrentUser = Depends(get_current_user)):
     session_dir = get_session_dir(session_id)
     repo_name = _repo_name_from_url(body.repo_url)
     target = session_dir / repo_name
@@ -173,7 +174,7 @@ def clone_repo(session_id: str, body: CloneRequest):
 
 
 @router.get("/{session_id}/git/status", response_model=GitStatusResponse)
-def git_status(session_id: str):
+def git_status(session_id: str, current_user: CurrentUser = Depends(get_current_user)):
     session_dir = get_session_dir(session_id)
     if not _meta_path(session_id).is_file():
         return GitStatusResponse(connected=False)
@@ -196,7 +197,7 @@ def git_status(session_id: str):
 
 
 @router.post("/{session_id}/git/commit-and-push", response_model=GitActionResponse)
-def commit_and_push(session_id: str, body: CommitPushRequest):
+def commit_and_push(session_id: str, body: CommitPushRequest, current_user: CurrentUser = Depends(get_current_user)):
     session_dir = get_session_dir(session_id)
     meta = _load_meta(session_id)
     repo_dir = session_dir / meta["repo_dir"]
@@ -222,7 +223,7 @@ def commit_and_push(session_id: str, body: CommitPushRequest):
 
 
 @router.get("/{session_id}/git/prs", response_model=ListPRsResponse)
-def list_prs(session_id: str):
+def list_prs(session_id: str, current_user: CurrentUser = Depends(get_current_user)):
     meta = _load_meta(session_id)
     owner_repo = _parse_github_repo(meta["remote_url"])
     if not owner_repo:
@@ -255,7 +256,7 @@ def list_prs(session_id: str):
 
 
 @router.post("/{session_id}/git/prs", response_model=CreatePRResponse)
-def create_pr(session_id: str, body: CreatePRRequest):
+def create_pr(session_id: str, body: CreatePRRequest, current_user: CurrentUser = Depends(get_current_user)):
     session_dir = get_session_dir(session_id)
     meta = _load_meta(session_id)
     owner_repo = _parse_github_repo(meta["remote_url"])

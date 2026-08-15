@@ -2,9 +2,11 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from . import db
+from .auth import CurrentUser, get_current_user
 from .sessions_store import create_session, get_session_dir, resolve_safe_path
 
 router = APIRouter(prefix="/api/sessions", tags=["files"])
@@ -12,6 +14,15 @@ router = APIRouter(prefix="/api/sessions", tags=["files"])
 
 class CreateSessionResponse(BaseModel):
     session_id: str
+
+
+class SessionSummary(BaseModel):
+    session_id: str
+    created_at: str
+
+
+class MySessionsResponse(BaseModel):
+    sessions: list[SessionSummary]
 
 
 class WriteFileBody(BaseModel):
@@ -41,18 +52,26 @@ def _build_tree(dir_path: Path, session_dir: Path) -> list[dict[str, Any]]:
 
 
 @router.post("", response_model=CreateSessionResponse)
-def new_session():
-    return {"session_id": create_session()}
+def new_session(current_user: CurrentUser = Depends(get_current_user)):
+    session_id = create_session()
+    db.record_session_owner(session_id, current_user.id)
+    return {"session_id": session_id}
+
+
+@router.get("/mine", response_model=MySessionsResponse)
+def my_sessions(current_user: CurrentUser = Depends(get_current_user)):
+    rows = db.list_sessions_for_user(current_user.id)
+    return {"sessions": [{"session_id": r["session_id"], "created_at": r["created_at"]} for r in rows]}
 
 
 @router.get("/{session_id}/files")
-def list_files(session_id: str):
+def list_files(session_id: str, current_user: CurrentUser = Depends(get_current_user)):
     session_dir = get_session_dir(session_id)
     return {"tree": _build_tree(session_dir, session_dir)}
 
 
 @router.get("/{session_id}/files/{file_path:path}")
-def read_file(session_id: str, file_path: str):
+def read_file(session_id: str, file_path: str, current_user: CurrentUser = Depends(get_current_user)):
     session_dir = get_session_dir(session_id)
     target = resolve_safe_path(session_dir, file_path)
     if not target.is_file():
@@ -61,7 +80,7 @@ def read_file(session_id: str, file_path: str):
 
 
 @router.put("/{session_id}/files/{file_path:path}")
-def write_file(session_id: str, file_path: str, body: WriteFileBody):
+def write_file(session_id: str, file_path: str, body: WriteFileBody, current_user: CurrentUser = Depends(get_current_user)):
     session_dir = get_session_dir(session_id)
     target = resolve_safe_path(session_dir, file_path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -70,7 +89,7 @@ def write_file(session_id: str, file_path: str, body: WriteFileBody):
 
 
 @router.post("/{session_id}/files/{file_path:path}")
-def create_entry(session_id: str, file_path: str, body: CreateEntryBody):
+def create_entry(session_id: str, file_path: str, body: CreateEntryBody, current_user: CurrentUser = Depends(get_current_user)):
     session_dir = get_session_dir(session_id)
     target = resolve_safe_path(session_dir, file_path)
     if target.exists():
@@ -84,7 +103,7 @@ def create_entry(session_id: str, file_path: str, body: CreateEntryBody):
 
 
 @router.delete("/{session_id}/files/{file_path:path}")
-def delete_entry(session_id: str, file_path: str):
+def delete_entry(session_id: str, file_path: str, current_user: CurrentUser = Depends(get_current_user)):
     session_dir = get_session_dir(session_id)
     target = resolve_safe_path(session_dir, file_path)
     if not target.exists():
@@ -97,7 +116,7 @@ def delete_entry(session_id: str, file_path: str):
 
 
 @router.post("/{session_id}/rename")
-def rename_entry(session_id: str, body: RenameBody):
+def rename_entry(session_id: str, body: RenameBody, current_user: CurrentUser = Depends(get_current_user)):
     session_dir = get_session_dir(session_id)
     old_target = resolve_safe_path(session_dir, body.old_path)
     new_target = resolve_safe_path(session_dir, body.new_path)

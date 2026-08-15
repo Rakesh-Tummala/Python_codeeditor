@@ -14,8 +14,10 @@ the security model, and known tradeoffs — see **[SYSTEM_DESIGN.md](SYSTEM_DESI
 
 **Core**
 - Multi-file Python projects: file tree, tabs, autosave
-- Real execution in an isolated Docker sandbox (non-root, no network, capped
-  memory/CPU/PIDs, multiple layered timeouts)
+- Real execution in an isolated Docker sandbox (non-root, capped memory/CPU/PIDs,
+  multiple layered timeouts; outbound network is intentionally allowed — see
+  [SYSTEM_DESIGN.md](SYSTEM_DESIGN.md#network-access-is-intentionally-enabled-not-sandboxed)
+  for the tradeoff)
 - A full `sys.settrace` trace of every run — step forward/back, inspect variables and
   the call stack at any point, set breakpoints by clicking a line number
 - AI-grounded debugging: "Explain this error" and "Explain this code" (Gemini),
@@ -124,9 +126,13 @@ real one" is worth calling out explicitly), and a build of all three Docker imag
 ## Security notes
 
 The sandbox (script execution, generated tests, and the terminal) runs as a non-root
-user with no network access and capped memory/CPU/process count — every one of these
-constraints was verified by actually trying to violate it, not just configured and
-assumed. GitHub tokens are encrypted at rest and never logged. Full detail, including
-the tradeoffs that come with this project's specific architecture (notably the
-Docker-outside-of-Docker socket mount in the Compose deployment), is in
+user with capped memory/CPU/process count — verified by actually trying to violate
+each one, not just configured and assumed. **Outbound network access is intentionally
+enabled** (so `pip install`, `git clone`, and real API calls work from inside the
+sandbox) — a deliberate tradeoff away from full isolation, not an oversight; see
+[SYSTEM_DESIGN.md §5](SYSTEM_DESIGN.md#network-access-is-intentionally-enabled-not-sandboxed)
+for exactly what that gives up. GitHub tokens are encrypted at rest and never logged.
+Full detail, including the tradeoffs that come with this project's specific
+architecture (notably the Docker-outside-of-Docker socket mount in the Compose
+deployment), is in
 [SYSTEM_DESIGN.md §5–6](SYSTEM_DESIGN.md#5-sandbox-isolation-model).

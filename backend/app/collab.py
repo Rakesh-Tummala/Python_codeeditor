@@ -7,6 +7,7 @@ from pycrdt import Channel, Text
 from pycrdt.websocket import WebsocketServer
 from pycrdt.websocket.yroom import YRoom
 
+from .auth import get_user_by_token
 from .sessions_store import get_session_dir, resolve_safe_path
 
 router = APIRouter()
@@ -55,6 +56,16 @@ class FastAPIChannel(Channel):
 
 @router.websocket("/api/yjs/{session_id}/{file_path:path}")
 async def yjs_room(websocket: WebSocket, session_id: str, file_path: str):
+    token = websocket.query_params.get("token")
+    if not token:
+        await websocket.close(code=4401)
+        return
+    try:
+        get_user_by_token(token)
+    except HTTPException:
+        await websocket.close(code=4401)
+        return
+
     try:
         session_dir = get_session_dir(session_id)
         target = resolve_safe_path(session_dir, file_path)
