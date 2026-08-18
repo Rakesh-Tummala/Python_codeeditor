@@ -19,6 +19,11 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY}
       FRONTEND_ORIGINS: ${FRONTEND_ORIGINS:-http://localhost:5173}
       GITHUB_TOKEN_KEY: ${GITHUB_TOKEN_KEY}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-http://localhost:8000/api/auth/google/callback}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
+      AUTH_SECRET_KEY: ${AUTH_SECRET_KEY}
       # Backend sees session data at /app/sessions, but its `docker run -v`
       # calls go to the HOST's daemon (via the socket below) to spawn
       # sibling containers - so it also needs the equivalent HOST path to
